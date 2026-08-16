@@ -23,7 +23,6 @@ VPS через Docker Compose.
 [`docs/BUYER_GUIDE.md`](docs/BUYER_GUIDE.md) и в готовом
 [`Word-документе`](docs/TerStars_Полное_руководство_для_покупателя.docx).
 
-Рублёвая оплата YooKassa реализована и изолирована от покупки Stars. Настройка test/live магазина: [`docs/YOOKASSA_SETUP.md`](docs/YOOKASSA_SETUP.md). Развёртывание на VPS: [`docs/VPS_DEPLOY.md`](docs/VPS_DEPLOY.md). До решения владельца по чекам, установки credentials и успешного preflight live-платежи остаются выключенными.
 
 Безопасное подключение Fragment KYC и cookies: [`docs/FRAGMENT_KYC_SETUP.md`](docs/FRAGMENT_KYC_SETUP.md).
 
