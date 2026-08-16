@@ -1,0 +1,1 @@
+"""terstars test package."""

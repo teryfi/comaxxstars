@@ -1,0 +1,371 @@
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: terstars
+      POSTGRES_USER: terstars_migrator
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+      - runtime_database_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/postgres-init-runtime.sh:/docker-entrypoint-initdb.d/10-runtime-user.sh:ro
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U terstars_migrator -d terstars"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *json-logging
+    mem_limit: 512m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    build: .
+    env_file: .env.production
+    environment:
+      DATABASE_URL_FILE: /run/secrets/migration_database_url
+    secrets:
+      - migration_database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    logging: *json-logging
+
+  bot:
+    build: .
+    env_file: .env.production
+    environment:
+      PROCESS_ROLE: bot
+      BOT_TOKEN_FILE: /run/secrets/bot_token
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      TELEGRAM_API_HASH_FILE: /run/secrets/telegram_api_hash
+      YOOKASSA_SHOP_ID_FILE: /run/secrets/yookassa_shop_id
+      YOOKASSA_SECRET_KEY_FILE: /run/secrets/yookassa_secret_key
+    secrets:
+      - bot_token
+      - runtime_database_url
+      - telegram_api_hash
+      - yookassa_shop_id
+      - yookassa_secret_key
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - telegram_sessions:/app/sessions
+    networks:
+      - application
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *json-logging
+    mem_limit: 384m
+    cpus: 1.0
+    command: ["python", "-m", "app.main"]
+
+  purchase-worker:
+    build: .
+    env_file: .env.production
+    environment:
+      PROCESS_ROLE: worker
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      FRAGMENT_WALLET_SEED_FILE: /run/secrets/fragment_wallet_seed
+      FRAGMENT_COOKIES_FILE: /run/secrets/fragment_cookies
+    secrets:
+      - runtime_database_url
+      - fragment_wallet_seed
+      - fragment_cookies
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - application
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 60s
+    logging: *json-logging
+    mem_limit: 384m
+    cpus: 1.0
+    command: ["python", "-m", "app.purchase_worker"]
+
+  admin:
+    build: .
+    env_file: .env.production
+    environment:
+      PROCESS_ROLE: admin
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: 8080
+      YOOKASSA_SHOP_ID_FILE: /run/secrets/yookassa_shop_id
+      YOOKASSA_SECRET_KEY_FILE: /run/secrets/yookassa_secret_key
+    secrets:
+      - runtime_database_url
+      - yookassa_shop_id
+      - yookassa_secret_key
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - application
+      - database
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging: *json-logging
+    mem_limit: 256m
+    cpus: 0.5
+    command: ["python", "-m", "app.admin.server"]
+
+  payment-gateway:
+    build: .
+    env_file: .env.production
+    environment:
+      PROCESS_ROLE: gateway
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      YOOKASSA_SHOP_ID_FILE: /run/secrets/yookassa_shop_id
+      YOOKASSA_SECRET_KEY_FILE: /run/secrets/yookassa_secret_key
+      WEBHOOK_HOST: 0.0.0.0
+      WEBHOOK_PORT: 8090
+    secrets:
+      - runtime_database_url
+      - yookassa_shop_id
+      - yookassa_secret_key
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - application
+      - database
+    expose:
+      - "8090"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 192m
+    cpus: 0.5
+    logging: *json-logging
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck_http.py", "http://127.0.0.1:8090/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    command: ["python", "-m", "app.payment_gateway"]
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    environment:
+      PAYMENT_PUBLIC_HOST: ${PAYMENT_PUBLIC_HOST:?Set PAYMENT_PUBLIC_HOST}
+    depends_on:
+      payment-gateway:
+        condition: service_healthy
+    networks:
+      - application
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    restart: unless-stopped
+    stop_grace_period: 30s
+    mem_limit: 128m
+    cpus: 0.5
+    logging: *json-logging
+
+  preflight:
+    profiles: ["ops"]
+    build: .
+    env_file: .env.production
+    environment:
+      PROCESS_ROLE: worker
+      BOT_TOKEN_FILE: /run/secrets/bot_token
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      TELEGRAM_API_HASH_FILE: /run/secrets/telegram_api_hash
+      FRAGMENT_WALLET_SEED_FILE: /run/secrets/fragment_wallet_seed
+      FRAGMENT_COOKIES_FILE: /run/secrets/fragment_cookies
+      YOOKASSA_SHOP_ID_FILE: /run/secrets/yookassa_shop_id
+      YOOKASSA_SECRET_KEY_FILE: /run/secrets/yookassa_secret_key
+    secrets:
+      - bot_token
+      - runtime_database_url
+      - telegram_api_hash
+      - fragment_wallet_seed
+      - fragment_cookies
+      - yookassa_shop_id
+      - yookassa_secret_key
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - application
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    command: ["python", "-m", "app.operations", "preflight"]
+    restart: "no"
+    logging: *json-logging
+
+  telegram-session:
+    profiles: ["setup"]
+    build: .
+    env_file: .env.production
+    environment:
+      TELEGRAM_API_HASH_FILE: /run/secrets/telegram_api_hash
+    secrets:
+      - telegram_api_hash
+    volumes:
+      - telegram_sessions:/app/sessions
+    networks:
+      - application
+    stdin_open: true
+    tty: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["python", "scripts/create_telegram_session.py"]
+    restart: "no"
+    logging: *json-logging
+
+  admin-cli:
+    profiles: ["setup"]
+    build: .
+    env_file: .env.production
+    environment:
+      PROCESS_ROLE: admin
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+    secrets:
+      - runtime_database_url
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - database
+    stdin_open: true
+    tty: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["python", "-m", "app.admin.cli", "create-owner", "--username", "owner"]
+    restart: "no"
+    logging: *json-logging
+
+  dry-run:
+    profiles: ["ops"]
+    build: .
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    network_mode: none
+    command: ["python", "-m", "app.operations", "dry-run"]
+    restart: "no"
+    logging: *json-logging
+
+secrets:
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_SECRET_FILE:?Set POSTGRES_PASSWORD_SECRET_FILE}
+  runtime_database_password:
+    file: ${RUNTIME_DATABASE_PASSWORD_SECRET_FILE:?Set RUNTIME_DATABASE_PASSWORD_SECRET_FILE}
+  migration_database_url:
+    file: ${MIGRATION_DATABASE_URL_SECRET_FILE:?Set MIGRATION_DATABASE_URL_SECRET_FILE}
+  runtime_database_url:
+    file: ${RUNTIME_DATABASE_URL_SECRET_FILE:?Set RUNTIME_DATABASE_URL_SECRET_FILE}
+  bot_token:
+    file: ${BOT_TOKEN_SECRET_FILE:?Set BOT_TOKEN_SECRET_FILE}
+  telegram_api_hash:
+    file: ${TELEGRAM_API_HASH_SECRET_FILE:?Set TELEGRAM_API_HASH_SECRET_FILE}
+  fragment_wallet_seed:
+    file: ${FRAGMENT_WALLET_SEED_SECRET_FILE:?Set FRAGMENT_WALLET_SEED_SECRET_FILE}
+  fragment_cookies:
+    file: ${FRAGMENT_COOKIES_SECRET_FILE:?Set FRAGMENT_COOKIES_SECRET_FILE}
+  yookassa_shop_id:
+    file: ${YOOKASSA_SHOP_ID_SECRET_FILE:?Set YOOKASSA_SHOP_ID_SECRET_FILE}
+  yookassa_secret_key:
+    file: ${YOOKASSA_SECRET_KEY_SECRET_FILE:?Set YOOKASSA_SECRET_KEY_SECRET_FILE}
+
+volumes:
+  postgres_data:
+  telegram_sessions:
+  caddy_data:
+  caddy_config:
+
+networks:
+  application:
+  database:
+    internal: true

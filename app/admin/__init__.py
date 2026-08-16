@@ -1,0 +1,1 @@
+"""Closed web administration panel."""

@@ -1,0 +1,19 @@
+{$PAYMENT_PUBLIC_HOST} {
+    encode zstd gzip
+
+    @payment_paths path /webhooks/yookassa /payments/return
+    handle @payment_paths {
+        reverse_proxy payment-gateway:8090
+    }
+
+    handle {
+        respond "Not found" 404
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+}
